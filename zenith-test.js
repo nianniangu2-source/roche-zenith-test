@@ -1,4 +1,4 @@
-/* 年年 · Zenith 连接测试 v1.1.0 — 原生 Roche 插件，Buttplug JSON v3 */
+/* 年年 · Zenith 连接测试 v1.1.1 — 原生 Roche 插件，Buttplug JSON v3 */
 (() => {
   'use strict';
   let active = null;
@@ -27,7 +27,7 @@
       .roche-plugin-niannian-zenith .nav{position:sticky;top:-24px;z-index:10;background:#f6f4f8;padding:10px 0}
       .roche-plugin-niannian-zenith .back{width:auto;margin:0;min-height:44px;padding:10px 18px}
       </style>
-      <div class="wrap"><div class="nav"><button class="back" type="button">← 返回 Roche</button></div><h2>Zenith 电脑控制</h2><p class="sub">年年 · 聊天控制版 1.1.0</p>
+      <div class="wrap"><div class="nav"><button class="back" type="button">← 返回 Roche</button></div><h2>Zenith 电脑控制</h2><p class="sub">年年 · 聊天控制版 1.1.1</p>
       <div class="card"><div class="status" role="status" aria-live="polite">尚未连接</div>
       <label>Intiface 地址<input class="address" type="url" value="ws://192.168.1.10:12345" spellcheck="false" autocapitalize="off"></label>
       <small>电脑打开 Roche，手机运行 Intiface；填写手机当前显示的地址，并连接同一 Wi-Fi。</small>
@@ -55,7 +55,48 @@
     let host = roche;
     const floating = document.createElement('button');
     floating.type = 'button';
-    floating.style.cssText = 'position:fixed;right:18px;bottom:24px;z-index:2147483647;padding:14px 18px;border:2px solid white;border-radius:14px;background:#ac304b;color:white;font:700 15px system-ui;cursor:pointer;box-shadow:0 3px 15px #0004;display:none';
+    floating.title = '点击停止并关闭聊天控制 · 按住可拖动';
+    floating.setAttribute('aria-label','停止 Zenith 并关闭聊天控制；可拖动');
+    floating.style.cssText = 'position:fixed;right:18px;bottom:90px;z-index:2147483647;width:64px;height:44px;padding:0;border:1px solid rgba(255,255,255,.8);border-radius:18px;background:linear-gradient(135deg,rgba(255,255,255,.78),rgba(255,220,230,.52));color:#862d48;font:700 12px system-ui;cursor:grab;box-shadow:0 4px 16px rgba(86,39,57,.16),inset 0 1px 0 rgba(255,255,255,.9);backdrop-filter:blur(16px) saturate(150%);-webkit-backdrop-filter:blur(16px) saturate(150%);touch-action:none;user-select:none;-webkit-user-select:none;display:none';
+    let drag = null, suppressClick = false, floatPosition = null;
+    function placeFloating(x,y) {
+      const width = 64, height = 44, margin = 8;
+      const viewport = window.visualViewport;
+      const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+      const vw = viewport?.width || window.innerWidth, vh = viewport?.height || window.innerHeight;
+      x = Math.max(left + margin, Math.min(x,left + vw - width - margin));
+      y = Math.max(top + margin, Math.min(y,top + vh - height - margin));
+      floatPosition = {x,y};
+      Object.assign(floating.style,{left:x+'px',top:y+'px',right:'auto',bottom:'auto'});
+    }
+    function fitFloating() {if (floatPosition) placeFloating(floatPosition.x,floatPosition.y);}
+    floating.onpointerdown = e => {
+      if (e.isPrimary === false || (e.button !== undefined && e.button !== 0)) return;
+      suppressClick = false;
+      const box = floating.getBoundingClientRect();
+      drag = {id:e.pointerId,x:e.clientX,y:e.clientY,left:box.left,top:box.top,moved:false};
+      floating.setPointerCapture?.(e.pointerId);
+    };
+    floating.onpointermove = e => {
+      if (!drag || drag.id !== e.pointerId) return;
+      const dx = e.clientX-drag.x, dy = e.clientY-drag.y;
+      if (!drag.moved && Math.hypot(dx,dy)<6) return;
+      drag.moved = true; suppressClick = true;
+      floating.style.cursor = 'grabbing';
+      placeFloating(drag.left+dx,drag.top+dy);
+    };
+    function endDrag(e) {
+      if (!drag || drag.id !== e.pointerId) return;
+      suppressClick = drag.moved || e.type === 'pointercancel';
+      drag = null; floating.style.cursor = 'grab';
+      if (floating.hasPointerCapture?.(e.pointerId)) floating.releasePointerCapture(e.pointerId);
+    }
+    floating.onpointerup = endDrag;
+    floating.onpointercancel = endDrag;
+    floating.onlostpointercapture = () => {drag = null; floating.style.cursor = 'grab';};
+    window.addEventListener('resize',fitFloating);
+    window.visualViewport?.addEventListener('resize',fitFloating);
+    window.visualViewport?.addEventListener('scroll',fitFloating);
     document.body.append(floating);
     let ws = null, ready = false, busy = false, running = false, destroyed = false;
     let sequence = 0, runToken = 0, watchdog = 0, pingBusy = false;
@@ -77,7 +118,7 @@
       $('.chats').disabled = armed || running;
       $('.armed-status').textContent = armed ? '已授权所选聊天 · 到期自动关闭' : '未授权聊天控制';
       floating.style.display = armed || running ? 'block' : 'none';
-      floating.textContent = '■ Zenith 停止 / 关闭聊天控制';
+      floating.textContent = '■ 停止';
       connect.disabled = busy || running;
       connect.textContent = ready ? '重新连接 / 刷新设备' : '连接 Intiface';
       address.disabled = busy || running;
@@ -263,7 +304,10 @@
     };
     $('.refresh').onclick = () => void refreshChats();
     $('.chats').onchange = () => {revoke(); update();};
-    floating.onclick = () => void disarm();
+    floating.onclick = e => {
+      if (suppressClick && e?.detail !== 0) {suppressClick = false; e?.preventDefault(); return;}
+      suppressClick = false; void disarm();
+    };
     function allowed(ctx) {return armed && Date.now() < armUntil && !document.hidden &&
       ctx?.conversationType === 'direct' && String(ctx.conversationId || '') === bound;}
     function visibility() {if (document.hidden) {closeSession('页面进入后台'); say('页面已进入后台，已尝试停止并断开。返回后需手动重连。');} else update();}
@@ -293,6 +337,9 @@
     function dispose() {
       destroyed = true; closeSession('插件已关闭');
       document.removeEventListener('securitypolicyviolation',policyViolation); document.removeEventListener('visibilitychange',visibility); window.removeEventListener('pagehide',hide);
+      window.removeEventListener('resize',fitFloating);
+      window.visualViewport?.removeEventListener('resize',fitFloating);
+      window.visualViewport?.removeEventListener('scroll',fitFloating);
       root.remove(); floating.remove(); active = null;
     }
     active = {
@@ -315,7 +362,7 @@
   }
   if (!window.RochePlugin?.register) throw new Error('请通过 Roche 插件管理安装此 JS 文件。');
   window.RochePlugin.register({
-    id:'niannian-zenith-test',name:'年年 · Zenith 电脑控制',version:'1.1.0',
+    id:'niannian-zenith-test',name:'年年 · Zenith 电脑控制',version:'1.1.1',
     description:'电脑 Roche 聊天控制 Zenith；指定单聊授权、限时执行、浮动停止按钮。',author:'年年',permissions:['ui','character:read'],
     onUnload() {active?.dispose();},
     chat:{
