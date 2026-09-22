@@ -1,8 +1,8 @@
-/* 年年 · Zenith 连接测试 v1.0.0 — 原生 Roche 插件，Buttplug JSON v3 */
+/* 年年 · Zenith 连接测试 v1.0.1 — 原生 Roche 插件，Buttplug JSON v3 */
 (() => {
   'use strict';
   const mounted = new WeakMap();
-  function mount(container) {
+  function mount(container, roche) {
     if (mounted.has(container)) mounted.get(container)();
     const root = document.createElement('section');
     root.className = 'roche-plugin-niannian-zenith';
@@ -22,8 +22,10 @@
       .roche-plugin-niannian-zenith .status{font-weight:650;white-space:pre-wrap;overflow-wrap:anywhere}
       .roche-plugin-niannian-zenith small{display:block;color:#71667e;margin-top:8px}
       .roche-plugin-niannian-zenith pre{font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:230px;overflow:auto}
+      .roche-plugin-niannian-zenith .nav{position:sticky;top:-24px;z-index:10;background:#f6f4f8;padding:10px 0}
+      .roche-plugin-niannian-zenith .back{width:auto;margin:0;min-height:44px;padding:10px 18px}
       </style>
-      <div class="wrap"><h2>Zenith 连接测试</h2><p class="sub">年年 · 第一步 / 手动测试版 1.0.0</p>
+      <div class="wrap"><div class="nav"><button class="back" type="button">← 返回 Roche</button></div><h2>Zenith 连接测试</h2><p class="sub">年年 · 第一步 / 手动测试版 1.0.1</p>
       <div class="card"><div class="status" role="status" aria-live="polite">尚未连接</div>
       <label>Intiface 地址<input class="address" type="url" value="ws://127.0.0.1:12345" spellcheck="false" autocapitalize="off"></label>
       <small>同一台设备先用默认地址；不同设备请填写 Intiface 当时显示的地址，并连接同一 Wi-Fi。</small>
@@ -145,6 +147,7 @@
         url = new URL(address.value.trim());
         if (!['ws:','wss:'].includes(url.protocol) || url.username || url.password || url.hash) throw new Error('请输入 ws:// 或 wss:// 地址，不要填网页链接或账号密码');
       } catch (e) {say('地址格式错误：' + e.message); return;}
+      log('本次连接地址：' + url.href);
       busy = true; update(); say('1/3 正在打开 WebSocket…');
       if (location.protocol === 'https:' && url.protocol === 'ws:') log('当前是 HTTPS 页面，浏览器可能限制 ws 连接；实际结果以本次测试为准。');
       try {ws = new WebSocket(url.href);} catch (e) {fail('浏览器拒绝建立连接：' + e.name + ' ' + e.message); return;}
@@ -204,6 +207,20 @@
     }
     function visibility() {if (document.hidden) {closeSession('页面进入后台'); say('页面已进入后台，已尝试停止并断开。返回后需手动重连。');} else update();}
     function hide() {closeSession('页面关闭');}
+    $('.back').onclick = async () => {
+      const back = $('.back'); back.disabled = true;
+      try {
+        if (ready && ws?.readyState === 1) await stop('返回前停止');
+        closeSession('返回 Roche');
+        if (typeof roche?.ui?.closeApp !== 'function') throw new Error('宿主未提供 closeApp 接口');
+        await roche.ui.closeApp();
+      } catch (e) {say('返回失败：' + e.message + '。请重新打开 Roche 页面。');}
+      finally {back.disabled = false;}
+    };
+    function policyViolation(e) {
+      if (e.effectiveDirective === 'connect-src') log('检测到页面 CSP connect-src 拦截：' + e.blockedURI);
+    }
+    document.addEventListener('securitypolicyviolation',policyViolation);
     connect.onclick = () => void startConnection();
     test.onclick = () => void vibrate();
     $('.stop').onclick = () => void stop();
@@ -214,14 +231,14 @@
     log('默认地址只适用于 Roche 和 Intiface 在同一台设备。');
     function dispose() {
       destroyed = true; closeSession('插件已关闭');
-      document.removeEventListener('visibilitychange',visibility); window.removeEventListener('pagehide',hide);
+      document.removeEventListener('securitypolicyviolation',policyViolation); document.removeEventListener('visibilitychange',visibility); window.removeEventListener('pagehide',hide);
       root.remove(); mounted.delete(container);
     }
     mounted.set(container,dispose);
   }
   if (!window.RochePlugin?.register) throw new Error('请通过 Roche 插件管理安装此 JS 文件。');
   window.RochePlugin.register({
-    id:'niannian-zenith-test',name:'年年 · Zenith 连接测试',version:'1.0.0',
+    id:'niannian-zenith-test',name:'年年 · Zenith 连接测试',version:'1.0.1',
     description:'手动连接 Intiface，Zenith 10% 两秒测试与停止。',author:'年年',permissions:['ui'],
     apps:[{id:'niannian-zenith-test-home',name:'Zenith 测试',icon:'settings',
       mount,unmount(container){mounted.get(container)?.();container.replaceChildren();}}]
