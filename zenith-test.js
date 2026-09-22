@@ -1,9 +1,11 @@
-/* 年年 · Zenith 连接测试 v1.0.1 — 原生 Roche 插件，Buttplug JSON v3 */
+/* 年年 · Zenith 连接测试 v1.1.0 — 原生 Roche 插件，Buttplug JSON v3 */
 (() => {
   'use strict';
-  const mounted = new WeakMap();
+  let active = null;
+  const observed = new Map();
+  const noSession = () => ({ok:false,error:'请先打开 Zenith 控制，连接设备并开启指定聊天授权。'});
   function mount(container, roche) {
-    if (mounted.has(container)) mounted.get(container)();
+    if (active) {active.attach(container, roche); return;}
     const root = document.createElement('section');
     root.className = 'roche-plugin-niannian-zenith';
     root.innerHTML = `
@@ -25,22 +27,36 @@
       .roche-plugin-niannian-zenith .nav{position:sticky;top:-24px;z-index:10;background:#f6f4f8;padding:10px 0}
       .roche-plugin-niannian-zenith .back{width:auto;margin:0;min-height:44px;padding:10px 18px}
       </style>
-      <div class="wrap"><div class="nav"><button class="back" type="button">← 返回 Roche</button></div><h2>Zenith 连接测试</h2><p class="sub">年年 · 第一步 / 手动测试版 1.0.1</p>
+      <div class="wrap"><div class="nav"><button class="back" type="button">← 返回 Roche</button></div><h2>Zenith 电脑控制</h2><p class="sub">年年 · 聊天控制版 1.1.0</p>
       <div class="card"><div class="status" role="status" aria-live="polite">尚未连接</div>
-      <label>Intiface 地址<input class="address" type="url" value="ws://127.0.0.1:12345" spellcheck="false" autocapitalize="off"></label>
-      <small>同一台设备先用默认地址；不同设备请填写 Intiface 当时显示的地址，并连接同一 Wi-Fi。</small>
+      <label>Intiface 地址<input class="address" type="url" value="ws://192.168.1.10:12345" spellcheck="false" autocapitalize="off"></label>
+      <small>电脑打开 Roche，手机运行 Intiface；填写手机当前显示的地址，并连接同一 Wi-Fi。</small>
       <button class="connect">连接 Intiface</button>
       <label>测试设备<select class="devices" disabled><option value="">连接后选择 Zenith</option></select></label>
       <button class="test" disabled>10% 测试 · 2 秒</button>
       <button class="stop">停止</button><small>停止按钮会停止当前 Intiface 下的所有设备。若连接已断开，请用设备按键或 Intiface 停止。</small></div>
+      <div class="card"><strong>聊天控制</strong>
+      <label>允许控制的单聊<select class="chats"><option value="">请选择聊天</option></select></label>
+      <button class="refresh">刷新聊天列表</button>
+      <small>若列表为空，先去目标单聊发一条消息，再返回刷新。只向选中的聊天开放控制。</small>
+      <button class="arm" disabled>开启聊天控制 · 15 分钟</button>
+      <div class="armed-status" role="status">未授权聊天控制</div>
+      <small>强度最高 20%，每次最多 10 秒；一次只执行一条指令。返回 Roche 后连接保留；切换浏览器标签或最小化会停止并断开。</small></div>
       <div class="card">请把设备放在桌上测试，保持页面在前台。2 秒自动停止依赖连接和页面正常运行，不能替代设备实体开关。
-      <small>仅测试连接与手动控制，不读取聊天、记忆或密钥。连接本身不会启动振动。</small></div>
+      <small>使用 Roche 当前聊天模型的工具调用；不另接 AI，不读取记忆或密钥。连接和授权本身不会启动振动。</small></div>
       <details class="card"><summary>连接诊断 / 截图给 G 哥</summary><pre class="log"></pre></details>
       </div>`;
     container.append(root);
     const $ = s => root.querySelector(s);
     const address = $('.address'), connect = $('.connect'), test = $('.test');
     const select = $('.devices'), status = $('.status'), logBox = $('.log');
+    let lastTurn = null;
+    let armed = false, bound = '', armUntil = 0, armTimer = null, finishRun = null;
+    let host = roche;
+    const floating = document.createElement('button');
+    floating.type = 'button';
+    floating.style.cssText = 'position:fixed;right:18px;bottom:24px;z-index:2147483647;padding:14px 18px;border:2px solid white;border-radius:14px;background:#ac304b;color:white;font:700 15px system-ui;cursor:pointer;box-shadow:0 3px 15px #0004;display:none';
+    document.body.append(floating);
     let ws = null, ready = false, busy = false, running = false, destroyed = false;
     let sequence = 0, runToken = 0, watchdog = 0, pingBusy = false;
     let autoStop = null, pingTimer = null, scanTimer = null, openTimer = null;
@@ -53,7 +69,15 @@
     function target() {return devices.get(Number(select.value));}
     function features(d) {return Array.isArray(d?.DeviceMessages?.ScalarCmd) ? d.DeviceMessages.ScalarCmd : [];}
     function isZenith(d) {return /zenith|funwand/i.test(d?.DeviceName || '') && features(d).some(f => f.ActuatorType === 'Vibrate');}
+    function settle(result) { const resolve = finishRun; finishRun = null; if (resolve) resolve(result); }
+    function revoke() {armed = false; bound = ''; armUntil = 0; cancel(armTimer); armTimer = null;}
     function update() {
+      $('.arm').disabled = !ready || busy || running || select.value === '' || !isZenith(target()) || !$('.chats').value || document.hidden;
+      $('.arm').textContent = armed ? '关闭聊天控制并停止' : '开启聊天控制 · 15 分钟';
+      $('.chats').disabled = armed || running;
+      $('.armed-status').textContent = armed ? '已授权所选聊天 · 到期自动关闭' : '未授权聊天控制';
+      floating.style.display = armed || running ? 'block' : 'none';
+      floating.textContent = '■ Zenith 停止 / 关闭聊天控制';
       connect.disabled = busy || running;
       connect.textContent = ready ? '重新连接 / 刷新设备' : '连接 Intiface';
       address.disabled = busy || running;
@@ -92,6 +116,7 @@
       }
     }
     function closeSession(reason) {
+      revoke(); settle({ok:false,error:reason || '连接已关闭',stopConfirmed:false});
       ++runToken; rawStop(); ready = false; running = false; busy = false;
       for (const t of timers) clearTimeout(t); timers.clear();
       clearInterval(pingTimer); pingTimer = null; pingBusy = false;
@@ -103,13 +128,14 @@
     function fail(message) {closeSession(message); say(message + '\n若设备仍在运行，请用实体开关或 Intiface 停止。');}
     async function stop(reason = '手动停止') {
       const token = ++runToken; cancel(autoStop); autoStop = null;
-      if (!ready || ws?.readyState !== 1) {say('无法发送停止：未连接。请用设备按键或 Intiface 停止。'); return;}
+      if (!ready || ws?.readyState !== 1) {const result = {ok:false,stopConfirmed:false,error:'未连接，无法确认停止'}; settle(result); say('无法发送停止：未连接。请用设备按键或 Intiface 停止。'); return result;}
       running = true; update();
       say(reason + '：正在等待 Intiface 确认');
       try {
         await request('StopAllDevices');
         if (token !== runToken) return;
         running = false; update(); say('Intiface 已确认停止指令，请确认设备实际停止。');
+        const result = {ok:true,stopConfirmed:true,message:'Intiface 已确认停止；实体设备状态需用户确认。'}; settle(result); return result;
       } catch (e) {if (token === runToken) fail('停止未确认：' + e.message);}
     }
     function receive(event) {
@@ -134,7 +160,7 @@
           if (kind === 'DeviceRemoved') {
             const removed = select.value !== '' && Number(select.value) === body.DeviceIndex;
             devices.delete(body.DeviceIndex); renderDevices();
-            if (removed) {++runToken; cancel(autoStop); running = false; rawStop(); update(); say('所选设备已断开；停止状态无法确认，请检查实体设备。');}
+            if (removed) {revoke(); settle({ok:false,error:'设备已断开',stopConfirmed:false}); ++runToken; cancel(autoStop); running = false; rawStop(); update(); say('所选设备已断开；停止状态无法确认，请检查实体设备。');}
           }
         }
       } catch (e) {fail('响应解析失败：' + e.message);}
@@ -190,30 +216,65 @@
         } catch(e) {if (ws === socket) fail('握手或设备读取失败：' + e.message);}
       };
     }
-    async function vibrate() {
+    async function vibrate(intensity = 10, seconds = 2) {
       const d = target();
-      if (!ready || busy || running || select.value === '' || !isZenith(d) || document.hidden) return;
+      if (!Number.isFinite(intensity) || !Number.isFinite(seconds) || intensity < 1 || intensity > 20 || seconds < 0.5 || seconds > 10)
+        return {ok:false,error:'强度必须为 1–20 的数字，秒数必须为 0.5–10 的数字。'};
+      if (!ready || busy || running || select.value === '' || !isZenith(d) || document.hidden)
+        return {ok:false,error:'未就绪、正在执行或页面不在前台；指令未发送。'};
       const index = features(d).findIndex(f => f.ActuatorType === 'Vibrate');
       const token = ++runToken; running = true; update();
-      say('正在发送 10% 测试；2 秒后发送停止。');
-      // Start the deadline BEFORE awaiting the acknowledgement: a missing ACK must not extend actuation.
-      autoStop = later(() => {if (token === runToken) void stop('2 秒测试结束');},2000);
-      try {
-        await request('ScalarCmd',{DeviceIndex:d.DeviceIndex,Scalars:[{Index:index,Scalar:0.1,ActuatorType:'Vibrate'}]});
-        if (token === runToken) say('Intiface 已接受 10% 指令，等待自动停止…');
-      } catch(e) {
-        if (token === runToken) {log('测试指令失败：' + e.message); void stop('测试异常，尝试停止');}
-      }
+      let accepted = false, commandError = null;
+      const completion = new Promise(resolve => {finishRun = resolve;});
+      say(`正在发送 ${intensity}% 指令；${seconds} 秒后发送停止。`);
+      autoStop = later(() => {if (token === runToken) void stop('限时结束');}, seconds * 1000);
+      request('ScalarCmd',{DeviceIndex:d.DeviceIndex,Scalars:[{Index:index,Scalar:intensity / 100,ActuatorType:'Vibrate'}]})
+        .then(() => {accepted = true; if (token === runToken) say('Intiface 已接受指令，等待限时停止…');})
+        .catch(e => {commandError = e.message; if (token === runToken) void stop('控制异常，尝试停止');});
+      const result = await completion;
+      return {...result, ok:result.ok && accepted && !commandError, commandAccepted:accepted,
+        intensity, seconds, ...(commandError ? {error:commandError} : {})};
     }
+    function snapshot() {return {connected:ready,armed:armed && Date.now() < armUntil,
+      conversationId:bound,device:target()?.DeviceName || null,running,maxIntensity:20,maxSeconds:10};}
+    async function refreshChats() {
+      const old = $('.chats').value;
+      try {
+        if (typeof host?.character?.list === 'function') {
+          const chars = await host.character.list();
+          if (Array.isArray(chars)) for (const c of chars) if (c.conversationId)
+            observed.set(String(c.conversationId),String(c.handle || c.name || c.conversationId));
+        }
+      } catch(e) {log('聊天列表：' + e.message + '；可先向目标单聊发消息再刷新。');}
+      if (destroyed || armed) return;
+      const menu = $('.chats'); menu.replaceChildren();
+      const blank = document.createElement('option'); blank.value = ''; blank.textContent = '请选择聊天'; menu.append(blank);
+      for (const [id,name] of observed) {const opt = document.createElement('option'); opt.value = id; opt.textContent = name; menu.append(opt);}
+      if (observed.has(old)) menu.value = old;
+      update();
+    }
+    async function disarm() {revoke(); update(); return await stop('关闭聊天控制');}
+    $('.arm').onclick = () => {
+      if (armed) return disarm();
+      if (!ready || busy || running || document.hidden || !isZenith(target()) || select.value === '' || !$('.chats').value) return;
+      lastTurn = null; bound = $('.chats').value; armed = true; armUntil = Date.now() + 15 * 60 * 1000;
+      armTimer = later(() => {void disarm();},15 * 60 * 1000);
+      update(); say('聊天控制已开启。返回 Roche，在选中的单聊发送控制请求。');
+    };
+    $('.refresh').onclick = () => void refreshChats();
+    $('.chats').onchange = () => {revoke(); update();};
+    floating.onclick = () => void disarm();
+    function allowed(ctx) {return armed && Date.now() < armUntil && !document.hidden &&
+      ctx?.conversationType === 'direct' && String(ctx.conversationId || '') === bound;}
     function visibility() {if (document.hidden) {closeSession('页面进入后台'); say('页面已进入后台，已尝试停止并断开。返回后需手动重连。');} else update();}
     function hide() {closeSession('页面关闭');}
     $('.back').onclick = async () => {
       const back = $('.back'); back.disabled = true;
       try {
         if (ready && ws?.readyState === 1) await stop('返回前停止');
-        closeSession('返回 Roche');
-        if (typeof roche?.ui?.closeApp !== 'function') throw new Error('宿主未提供 closeApp 接口');
-        await roche.ui.closeApp();
+        if (!armed) closeSession('返回 Roche');
+        if (typeof host?.ui?.closeApp !== 'function') throw new Error('宿主未提供 closeApp 接口');
+        await host.ui.closeApp();
       } catch (e) {say('返回失败：' + e.message + '。请重新打开 Roche 页面。');}
       finally {back.disabled = false;}
     };
@@ -223,24 +284,57 @@
     document.addEventListener('securitypolicyviolation',policyViolation);
     connect.onclick = () => void startConnection();
     test.onclick = () => void vibrate();
-    $('.stop').onclick = () => void stop();
-    select.onchange = update;
+    $('.stop').onclick = () => void disarm();
+    select.onchange = () => {revoke(); update();};
     document.addEventListener('visibilitychange',visibility);
     window.addEventListener('pagehide',hide);
     log('页面协议：' + location.protocol + '；安全上下文：' + Boolean(window.isSecureContext));
-    log('默认地址只适用于 Roche 和 Intiface 在同一台设备。');
+    log('电脑版：填写手机 Intiface 当前地址。授权后返回 Roche 保持连接。');
     function dispose() {
       destroyed = true; closeSession('插件已关闭');
       document.removeEventListener('securitypolicyviolation',policyViolation); document.removeEventListener('visibilitychange',visibility); window.removeEventListener('pagehide',hide);
-      root.remove(); mounted.delete(container);
+      root.remove(); floating.remove(); active = null;
     }
-    mounted.set(container,dispose);
+    active = {
+      attach(next, nextHost) {host = nextHost; next.append(root); void refreshChats(); update();},
+      detach() {if (!armed) closeSession('面板已关闭'); else if (running) void stop('离开控制面板'); root.remove();},
+      dispose, snapshot,
+      context(ctx) {return allowed(ctx) ? 'Zenith 已连接并授权本聊天。可调用 zenith_vibrate（intensity 百分比 1–20，seconds 秒数 0.5–10）或 zenith_stop。仅在用户明确要求设备动作时调用；每轮最多一次振动，禁止循环续时。' : null;},
+      async execute(args,ctx) {
+        if (!allowed(ctx)) return {ok:false,error:'本聊天未授权或授权已过期。'};
+        if (typeof args?.intensity !== 'number' || typeof args?.seconds !== 'number') return {ok:false,error:'请提供数字 intensity 和 seconds。'};
+        const turn = JSON.stringify(ctx.latestUserMessage ?? null);
+        if (turn === 'null' || turn === lastTurn) return {ok:false,error:'缺少本轮用户消息，或本轮已执行过；请等待下一条用户指令。'};
+        if (!ready || busy || running || args.intensity < 1 || args.intensity > 20 || args.seconds < 0.5 || args.seconds > 10 || !Number.isFinite(args.intensity) || !Number.isFinite(args.seconds)) return {ok:false,error:'设备忙或参数越界；未发送。'};
+        lastTurn = turn;
+        return await vibrate(args.intensity,args.seconds);
+      },
+      async stopFromChat() {return await disarm();}
+    };
+    void refreshChats(); update();
   }
   if (!window.RochePlugin?.register) throw new Error('请通过 Roche 插件管理安装此 JS 文件。');
   window.RochePlugin.register({
-    id:'niannian-zenith-test',name:'年年 · Zenith 连接测试',version:'1.0.1',
-    description:'手动连接 Intiface，Zenith 10% 两秒测试与停止。',author:'年年',permissions:['ui'],
-    apps:[{id:'niannian-zenith-test-home',name:'Zenith 测试',icon:'settings',
-      mount,unmount(container){mounted.get(container)?.();container.replaceChildren();}}]
+    id:'niannian-zenith-test',name:'年年 · Zenith 电脑控制',version:'1.1.0',
+    description:'电脑 Roche 聊天控制 Zenith；指定单聊授权、限时执行、浮动停止按钮。',author:'年年',permissions:['ui','character:read'],
+    onUnload() {active?.dispose();},
+    chat:{
+      scope:{conversationTypes:['direct']},
+      contextProvider(ctx) {
+        if (ctx?.conversationType === 'direct' && ctx.conversationId)
+          observed.set(String(ctx.conversationId),String(ctx.contact?.handle || ctx.contact?.name || ctx.conversation?.name || ctx.conversationId));
+        return active?.context(ctx) || null;
+      },
+      tools:[
+        {id:'zenith_status',description:'查询 Zenith 连接及当前聊天授权；不启动设备。',parameters:{},
+          execute(args,ctx) {const state=active?.snapshot(); return state ? {...state,armed:state.armed && state.conversationId === String(ctx?.conversationId || ''),conversationId:undefined} : noSession();}},
+        {id:'zenith_vibrate',description:'用户明确要求控制 Zenith 时执行一次限时振动。必须先手动授权本聊天；每轮最多调用一次，不循环。intensity 是 1–20 的百分比数字，seconds 是 0.5–10 秒；等待停止后返回结果，不得虚构成功。',parameters:{intensity:'number',seconds:'number'},
+          execute(args,ctx) {return active ? active.execute(args,ctx) : noSession();}},
+        {id:'zenith_stop',description:'停止 Zenith 并关闭聊天控制。用户要求停止时优先调用，不需要授权。',parameters:{},
+          execute() {return active ? active.stopFromChat() : noSession();}}
+      ]
+    },
+    apps:[{id:'niannian-zenith-test-home',name:'Zenith 控制',icon:'settings',
+      mount,unmount(container){active?.detach();container.replaceChildren();}}]
   });
 })();
