@@ -1,4 +1,4 @@
-/* 年年 · Zenith 连接测试 v1.2.0 — 原生 Roche 插件，Buttplug JSON v3 */
+/* 年年 · Zenith 连接测试 v1.2.1 — 原生 Roche 插件，Buttplug JSON v3 */
 (() => {
   'use strict';
   let active = null;
@@ -27,7 +27,7 @@
       .roche-plugin-niannian-zenith .nav{position:sticky;top:-24px;z-index:10;background:#f6f4f8;padding:10px 0}
       .roche-plugin-niannian-zenith .back{width:auto;margin:0;min-height:44px;padding:10px 18px}
       </style>
-      <div class="wrap"><div class="nav"><button class="back" type="button">← 返回 Roche</button></div><h2>Zenith 电脑控制</h2><p class="sub">年年 · 聊天控制版 1.2.0</p>
+      <div class="wrap"><div class="nav"><button class="back" type="button">← 返回 Roche</button></div><h2>Zenith 电脑控制</h2><p class="sub">年年 · 聊天控制版 1.2.1</p>
       <div class="card"><div class="status" role="status" aria-live="polite">尚未连接</div>
       <label>Intiface 地址<input class="address" type="url" value="ws://192.168.1.10:12345" spellcheck="false" autocapitalize="off"></label>
       <small>电脑打开 Roche，手机运行 Intiface；填写手机当前显示的地址，并连接同一 Wi-Fi。</small>
@@ -40,10 +40,10 @@
       <button class="refresh">刷新聊天列表</button>
       <small>若列表为空，先去目标单聊发一条消息，再返回刷新。只向选中的聊天开放控制。</small>
       <label>本次授权时长<select class="lease"><option value="15">15 分钟</option><option value="30" selected>30 分钟</option><option value="60">60 分钟</option></select></label>
-      <label>允许每次最长运行<select class="duration"><option value="10">10 秒</option><option value="30">30 秒</option><option value="60">60 秒</option></select></label>
+      <label>允许每次最长运行<select class="duration"><option value="10">10 秒</option><option value="30">30 秒</option><option value="60">60 秒</option><option value="300">5 分钟</option><option value="600">10 分钟</option><option value="900">15 分钟</option></select></label>
       <button class="arm" disabled>开启聊天控制</button>
       <div class="armed-status" role="status">未授权聊天控制</div>
-      <small>强度最高 20%，每次按上方时限自动停止。动作结束后保留授权，可继续发送新指令；不支持无限运行。返回 Roche 后连接保留；切换浏览器标签或最小化会停止并断开。</small></div>
+      <small>强度最高 20%，每次按上方时限自动停止。动作结束后保留授权，可继续发送新指令；授权到期会提前停止当前动作。选择的是上限，不会自动按该时长启动。返回 Roche 后连接保留；切换浏览器标签或最小化会停止并断开。</small></div>
       <div class="card">请把设备放在桌上测试，保持页面在前台。2 秒自动停止依赖连接和页面正常运行，不能替代设备实体开关。
       <small>使用 Roche 当前聊天模型的工具调用；不另接 AI，不读取记忆或密钥。连接和授权本身不会启动振动。</small></div>
       <details class="card"><summary>连接诊断 / 截图给 G 哥</summary><pre class="log"></pre></details>
@@ -290,7 +290,7 @@
       return {...result, ok:result.ok && accepted && !commandError, commandAccepted:accepted,
         intensity, seconds, ...(commandError ? {error:commandError} : {})};
     }
-    function maxDuration() {return [10,30,60].includes(Number($('.duration').value)) ? Number($('.duration').value) : 10;}
+    function maxDuration() {return [10,30,60,300,600,900].includes(Number($('.duration').value)) ? Number($('.duration').value) : 10;}
     function snapshot() {return {connected:ready,armed:armed && Date.now() < armUntil,
       conversationId:bound,device:target()?.DeviceName || null,running,maxIntensity:20,maxSeconds:maxDuration(),remainingAuthorizationSeconds:Math.max(0,Math.ceil((armUntil-Date.now())/1000)),authorizationReason:authReason};}
     async function refreshChats() {
@@ -384,7 +384,7 @@
   }
   if (!window.RochePlugin?.register) throw new Error('请通过 Roche 插件管理安装此 JS 文件。');
   window.RochePlugin.register({
-    id:'niannian-zenith-test',name:'年年 · Zenith 电脑控制',version:'1.2.0',
+    id:'niannian-zenith-test',name:'年年 · Zenith 电脑控制',version:'1.2.1',
     description:'电脑 Roche 聊天控制 Zenith；指定单聊授权、限时执行、浮动停止按钮。',author:'年年',permissions:['ui','character:read'],
     onUnload() {active?.dispose();},
     chat:{
@@ -397,7 +397,7 @@
       tools:[
         {id:'zenith_status',description:'查询 Zenith 连接及当前聊天授权；不启动设备。',parameters:{},
           execute(args,ctx) {const state=active?.snapshot(); return state ? {...state,armed:state.armed && state.conversationId === String(ctx?.conversationId || ''),conversationId:undefined} : noSession();}},
-        {id:'zenith_vibrate',description:'用户明确要求控制 Zenith 时执行一次限时振动。必须先手动授权本聊天；每轮最多调用一次，不循环。intensity 是 1–20 的百分比数字，seconds 是秒数，上限以当前上下文中的用户设置为准，最多60秒。理解自然语言；10秒内等待停止再返回，超过10秒仅先确认接收，禁止编造实际状态。',parameters:{intensity:'number',seconds:'number'},
+        {id:'zenith_vibrate',description:'用户明确要求控制 Zenith 时执行一次限时振动。必须先手动授权本聊天；每轮最多调用一次，不循环。intensity 是 1–20 的百分比数字，seconds 是秒数，上限以当前上下文中的用户设置为准，最多900秒（15分钟）。分钟需要换算成秒：5分钟=300，10分钟=600，15分钟=900。理解自然语言；10秒内等待停止再返回，超过10秒仅先确认接收，禁止编造实际状态。',parameters:{intensity:'number',seconds:'number'},
           execute(args,ctx) {return active ? active.execute(args,ctx) : noSession();}},
         {id:'zenith_stop',description:'停止 Zenith 当前动作并保留聊天授权。用户要求停止时优先调用；限时振动结束不需要额外调用。',parameters:{},
           execute() {return active ? active.stopFromChat() : noSession();}}
