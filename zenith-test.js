@@ -1,4 +1,4 @@
-/* 年年 · Zenith 连接测试 v1.1.1 — 原生 Roche 插件，Buttplug JSON v3 */
+/* 年年 · Zenith 连接测试 v1.2.0 — 原生 Roche 插件，Buttplug JSON v3 */
 (() => {
   'use strict';
   let active = null;
@@ -27,7 +27,7 @@
       .roche-plugin-niannian-zenith .nav{position:sticky;top:-24px;z-index:10;background:#f6f4f8;padding:10px 0}
       .roche-plugin-niannian-zenith .back{width:auto;margin:0;min-height:44px;padding:10px 18px}
       </style>
-      <div class="wrap"><div class="nav"><button class="back" type="button">← 返回 Roche</button></div><h2>Zenith 电脑控制</h2><p class="sub">年年 · 聊天控制版 1.1.1</p>
+      <div class="wrap"><div class="nav"><button class="back" type="button">← 返回 Roche</button></div><h2>Zenith 电脑控制</h2><p class="sub">年年 · 聊天控制版 1.2.0</p>
       <div class="card"><div class="status" role="status" aria-live="polite">尚未连接</div>
       <label>Intiface 地址<input class="address" type="url" value="ws://192.168.1.10:12345" spellcheck="false" autocapitalize="off"></label>
       <small>电脑打开 Roche，手机运行 Intiface；填写手机当前显示的地址，并连接同一 Wi-Fi。</small>
@@ -39,9 +39,11 @@
       <label>允许控制的单聊<select class="chats"><option value="">请选择聊天</option></select></label>
       <button class="refresh">刷新聊天列表</button>
       <small>若列表为空，先去目标单聊发一条消息，再返回刷新。只向选中的聊天开放控制。</small>
-      <button class="arm" disabled>开启聊天控制 · 15 分钟</button>
+      <label>本次授权时长<select class="lease"><option value="15">15 分钟</option><option value="30" selected>30 分钟</option><option value="60">60 分钟</option></select></label>
+      <label>允许每次最长运行<select class="duration"><option value="10">10 秒</option><option value="30">30 秒</option><option value="60">60 秒</option></select></label>
+      <button class="arm" disabled>开启聊天控制</button>
       <div class="armed-status" role="status">未授权聊天控制</div>
-      <small>强度最高 20%，每次最多 10 秒；一次只执行一条指令。返回 Roche 后连接保留；切换浏览器标签或最小化会停止并断开。</small></div>
+      <small>强度最高 20%，每次按上方时限自动停止。动作结束后保留授权，可继续发送新指令；不支持无限运行。返回 Roche 后连接保留；切换浏览器标签或最小化会停止并断开。</small></div>
       <div class="card">请把设备放在桌上测试，保持页面在前台。2 秒自动停止依赖连接和页面正常运行，不能替代设备实体开关。
       <small>使用 Roche 当前聊天模型的工具调用；不另接 AI，不读取记忆或密钥。连接和授权本身不会启动振动。</small></div>
       <details class="card"><summary>连接诊断 / 截图给 G 哥</summary><pre class="log"></pre></details>
@@ -50,7 +52,7 @@
     const $ = s => root.querySelector(s);
     const address = $('.address'), connect = $('.connect'), test = $('.test');
     const select = $('.devices'), status = $('.status'), logBox = $('.log');
-    let lastTurn = null;
+    let lastTurn = null, authReason = '尚未开启', authClock = null;
     let armed = false, bound = '', armUntil = 0, armTimer = null, finishRun = null;
     let host = roche;
     const floating = document.createElement('button');
@@ -105,18 +107,23 @@
     const timers = new Set();
     function later(fn, ms) { const t = setTimeout(() => {timers.delete(t); fn();}, ms); timers.add(t); return t; }
     function cancel(t) {clearTimeout(t); timers.delete(t);}
-    function log(s) {logBox.textContent = (logBox.textContent + new Date().toLocaleTimeString() + ' ' + s + '\n').split('\n').slice(-65).join('\n');}
+    function log(s) {logBox.textContent = (logBox.textContent + new Date().toLocaleTimeString() + ' ' + s + '\n').split('\n').slice(-200).join('\n');}
     function say(s) {if (!destroyed) status.textContent = s; log(s);}
     function target() {return devices.get(Number(select.value));}
     function features(d) {return Array.isArray(d?.DeviceMessages?.ScalarCmd) ? d.DeviceMessages.ScalarCmd : [];}
     function isZenith(d) {return /zenith|funwand/i.test(d?.DeviceName || '') && features(d).some(f => f.ActuatorType === 'Vibrate');}
     function settle(result) { const resolve = finishRun; finishRun = null; if (resolve) resolve(result); }
-    function revoke() {armed = false; bound = ''; armUntil = 0; cancel(armTimer); armTimer = null;}
+    function revoke(reason = '手动关闭') {
+      if (armed) {authReason = reason; log('聊天授权已关闭：' + reason);}
+      clearInterval(authClock); authClock = null;
+      armed = false; bound = ''; armUntil = 0; cancel(armTimer); armTimer = null;}
     function update() {
-      $('.arm').disabled = !ready || busy || running || select.value === '' || !isZenith(target()) || !$('.chats').value || document.hidden;
-      $('.arm').textContent = armed ? '关闭聊天控制并停止' : '开启聊天控制 · 15 分钟';
+      $('.arm').disabled = !armed && (!ready || busy || running || select.value === '' || !isZenith(target()) || !$('.chats').value || document.hidden);
+      $('.arm').textContent = armed ? '关闭聊天控制并停止' : '开启聊天控制';
       $('.chats').disabled = armed || running;
-      $('.armed-status').textContent = armed ? '已授权所选聊天 · 到期自动关闭' : '未授权聊天控制';
+      $('.lease').disabled = armed || running; $('.duration').disabled = armed || running;
+      const remaining = Math.max(0,Math.ceil((armUntil-Date.now())/1000));
+      $('.armed-status').textContent = armed ? `已授权 · 剩余 ${Math.floor(remaining/60)}分${remaining%60}秒 · 单次最多 ${maxDuration()}秒` : '未授权 · ' + authReason;
       floating.style.display = armed || running ? 'block' : 'none';
       floating.textContent = '■ 停止';
       connect.disabled = busy || running;
@@ -157,7 +164,7 @@
       }
     }
     function closeSession(reason) {
-      revoke(); settle({ok:false,error:reason || '连接已关闭',stopConfirmed:false});
+      revoke(reason || '连接关闭'); log('连接关闭：' + (reason || '未提供原因')); settle({ok:false,error:reason || '连接已关闭',stopConfirmed:false});
       ++runToken; rawStop(); ready = false; running = false; busy = false;
       for (const t of timers) clearTimeout(t); timers.clear();
       clearInterval(pingTimer); pingTimer = null; pingBusy = false;
@@ -201,7 +208,7 @@
           if (kind === 'DeviceRemoved') {
             const removed = select.value !== '' && Number(select.value) === body.DeviceIndex;
             devices.delete(body.DeviceIndex); renderDevices();
-            if (removed) {revoke(); settle({ok:false,error:'设备已断开',stopConfirmed:false}); ++runToken; cancel(autoStop); running = false; rawStop(); update(); say('所选设备已断开；停止状态无法确认，请检查实体设备。');}
+            if (removed) {revoke('设备已断开'); settle({ok:false,error:'设备已断开',stopConfirmed:false}); ++runToken; cancel(autoStop); running = false; rawStop(); update(); say('所选设备已断开；停止状态无法确认，请检查实体设备。');}
           }
         }
       } catch (e) {fail('响应解析失败：' + e.message);}
@@ -259,8 +266,8 @@
     }
     async function vibrate(intensity = 10, seconds = 2) {
       const d = target();
-      if (!Number.isFinite(intensity) || !Number.isFinite(seconds) || intensity < 1 || intensity > 20 || seconds < 0.5 || seconds > 10)
-        return {ok:false,error:'强度必须为 1–20 的数字，秒数必须为 0.5–10 的数字。'};
+      if (!Number.isFinite(intensity) || !Number.isFinite(seconds) || intensity < 1 || intensity > 20 || seconds < 0.5 || seconds > maxDuration())
+        return {ok:false,error:'强度必须为 1–20，秒数不得超过用户设置的时限。'};
       if (!ready || busy || running || select.value === '' || !isZenith(d) || document.hidden)
         return {ok:false,error:'未就绪、正在执行或页面不在前台；指令未发送。'};
       const index = features(d).findIndex(f => f.ActuatorType === 'Vibrate');
@@ -269,15 +276,23 @@
       const completion = new Promise(resolve => {finishRun = resolve;});
       say(`正在发送 ${intensity}% 指令；${seconds} 秒后发送停止。`);
       autoStop = later(() => {if (token === runToken) void stop('限时结束');}, seconds * 1000);
-      request('ScalarCmd',{DeviceIndex:d.DeviceIndex,Scalars:[{Index:index,Scalar:intensity / 100,ActuatorType:'Vibrate'}]})
-        .then(() => {accepted = true; if (token === runToken) say('Intiface 已接受指令，等待限时停止…');})
-        .catch(e => {commandError = e.message; if (token === runToken) void stop('控制异常，尝试停止');});
+      const acknowledgement = request('ScalarCmd',{DeviceIndex:d.DeviceIndex,Scalars:[{Index:index,Scalar:intensity / 100,ActuatorType:'Vibrate'}]})
+        .then(() => {
+          accepted = true;
+          if (token !== runToken) return {ok:false,commandAccepted:true,message:'指令已被停止或中断，不得描述为正在运行。'};
+          say(`Intiface 已接受 ${intensity}% 指令；最长 ${seconds} 秒后停止。`);
+          return {ok:true,commandAccepted:true,stopConfirmed:false,scheduledStopSeconds:seconds,intensity,
+            message:'仅确认服务器接受指令；限时停止尚未发生。不要声称设备已实际振动或已停止。'};
+        })
+        .catch(e => {commandError = e.message; if (token === runToken) void stop('控制异常，尝试停止'); return {ok:false,error:e.message};});
+      if (seconds > 10) return await acknowledgement;
       const result = await completion;
       return {...result, ok:result.ok && accepted && !commandError, commandAccepted:accepted,
         intensity, seconds, ...(commandError ? {error:commandError} : {})};
     }
+    function maxDuration() {return [10,30,60].includes(Number($('.duration').value)) ? Number($('.duration').value) : 10;}
     function snapshot() {return {connected:ready,armed:armed && Date.now() < armUntil,
-      conversationId:bound,device:target()?.DeviceName || null,running,maxIntensity:20,maxSeconds:10};}
+      conversationId:bound,device:target()?.DeviceName || null,running,maxIntensity:20,maxSeconds:maxDuration(),remainingAuthorizationSeconds:Math.max(0,Math.ceil((armUntil-Date.now())/1000)),authorizationReason:authReason};}
     async function refreshChats() {
       const old = $('.chats').value;
       try {
@@ -294,16 +309,19 @@
       if (observed.has(old)) menu.value = old;
       update();
     }
-    async function disarm() {revoke(); update(); return await stop('关闭聊天控制');}
+    async function disarm(reason = '用户关闭聊天控制') {revoke(reason); update(); return await stop(reason);}
     $('.arm').onclick = () => {
       if (armed) return disarm();
       if (!ready || busy || running || document.hidden || !isZenith(target()) || select.value === '' || !$('.chats').value) return;
-      lastTurn = null; bound = $('.chats').value; armed = true; armUntil = Date.now() + 15 * 60 * 1000;
-      armTimer = later(() => {void disarm();},15 * 60 * 1000);
+      const minutes = [15,30,60].includes(Number($('.lease').value)) ? Number($('.lease').value) : 30;
+      lastTurn = null; bound = $('.chats').value; armed = true; authReason = ''; armUntil = Date.now() + minutes * 60 * 1000;
+      armTimer = later(() => {void disarm('授权时间到期');},minutes * 60 * 1000);
+      authClock = setInterval(update,1000);
+      log(`授权 ${minutes} 分钟；到期时间 ${new Date(armUntil).toLocaleTimeString()}；单次最长 ${maxDuration()} 秒。`);
       update(); say('聊天控制已开启。返回 Roche，在选中的单聊发送控制请求。');
     };
     $('.refresh').onclick = () => void refreshChats();
-    $('.chats').onchange = () => {revoke(); update();};
+    $('.chats').onchange = () => {revoke('更换聊天'); update();};
     floating.onclick = e => {
       if (suppressClick && e?.detail !== 0) {suppressClick = false; e?.preventDefault(); return;}
       suppressClick = false; void disarm();
@@ -329,7 +347,7 @@
     connect.onclick = () => void startConnection();
     test.onclick = () => void vibrate();
     $('.stop').onclick = () => void disarm();
-    select.onchange = () => {revoke(); update();};
+    select.onchange = () => {revoke('更换设备'); update();};
     document.addEventListener('visibilitychange',visibility);
     window.addEventListener('pagehide',hide);
     log('页面协议：' + location.protocol + '；安全上下文：' + Boolean(window.isSecureContext));
@@ -346,23 +364,27 @@
       attach(next, nextHost) {host = nextHost; next.append(root); void refreshChats(); update();},
       detach() {if (!armed) closeSession('面板已关闭'); else if (running) void stop('离开控制面板'); root.remove();},
       dispose, snapshot,
-      context(ctx) {return allowed(ctx) ? 'Zenith 已连接并授权本聊天。可调用 zenith_vibrate（intensity 百分比 1–20，seconds 秒数 0.5–10）或 zenith_stop。仅在用户明确要求设备动作时调用；每轮最多一次振动，禁止循环续时。' : null;},
+      context(ctx) {
+        if (!allowed(ctx)) return 'Zenith 当前未授权此聊天；不得声称已操控实体设备，需要用户在插件开启授权。';
+        return `Zenith 已授权当前聊天，当前${running ? '有动作正在运行' : '空闲'}。工具 zenith_vibrate 的 intensity 为百分比1–20，seconds为0.5–${maxDuration()}秒。理解自然语言的启动、继续、再来一次、轻一点等请求，不要求用户念工具名。用户明确要求启动但未指定参数时可用10%两秒；遵守用户指定的时间和强度。请求持续控制时，说明单次上限并在上限内执行一段，不能承诺一直运行。每条新用户消息最多启动一次，不循环续时。zenith_stop 只停止动作，保留授权；每次振动已自带限时停止，不必额外调用停止。只有工具结果可证实指令是否发送，不可编造成功；服务器接受不等于实体设备真的振动。长指令会在接受后先返回，stopConfirmed=false代表尚未确认停止，不能说已完成。不要把这些技术规则逐条念给用户。`;
+      },
       async execute(args,ctx) {
-        if (!allowed(ctx)) return {ok:false,error:'本聊天未授权或授权已过期。'};
+        if (!allowed(ctx)) {log('聊天调用被拒绝：会话不匹配或授权未开启/已到期'); return {ok:false,error:'本聊天未授权或授权已过期。'};}
         if (typeof args?.intensity !== 'number' || typeof args?.seconds !== 'number') return {ok:false,error:'请提供数字 intensity 和 seconds。'};
         const turn = JSON.stringify(ctx.latestUserMessage ?? null);
         if (turn === 'null' || turn === lastTurn) return {ok:false,error:'缺少本轮用户消息，或本轮已执行过；请等待下一条用户指令。'};
-        if (!ready || busy || running || args.intensity < 1 || args.intensity > 20 || args.seconds < 0.5 || args.seconds > 10 || !Number.isFinite(args.intensity) || !Number.isFinite(args.seconds)) return {ok:false,error:'设备忙或参数越界；未发送。'};
+        if (!ready || busy || running || args.intensity < 1 || args.intensity > 20 || args.seconds < 0.5 || args.seconds > maxDuration() || !Number.isFinite(args.intensity) || !Number.isFinite(args.seconds)) return {ok:false,error:'设备忙或参数越界；未发送。'};
+        log(`聊天调用：${args.intensity}% / ${args.seconds}秒`);
         lastTurn = turn;
         return await vibrate(args.intensity,args.seconds);
       },
-      async stopFromChat() {return await disarm();}
+      async stopFromChat() {log('聊天工具调用停止：保留当前授权'); const result = await stop('聊天请求停止'); return {...result,authorizationRetained:armed};}
     };
     void refreshChats(); update();
   }
   if (!window.RochePlugin?.register) throw new Error('请通过 Roche 插件管理安装此 JS 文件。');
   window.RochePlugin.register({
-    id:'niannian-zenith-test',name:'年年 · Zenith 电脑控制',version:'1.1.1',
+    id:'niannian-zenith-test',name:'年年 · Zenith 电脑控制',version:'1.2.0',
     description:'电脑 Roche 聊天控制 Zenith；指定单聊授权、限时执行、浮动停止按钮。',author:'年年',permissions:['ui','character:read'],
     onUnload() {active?.dispose();},
     chat:{
@@ -375,9 +397,9 @@
       tools:[
         {id:'zenith_status',description:'查询 Zenith 连接及当前聊天授权；不启动设备。',parameters:{},
           execute(args,ctx) {const state=active?.snapshot(); return state ? {...state,armed:state.armed && state.conversationId === String(ctx?.conversationId || ''),conversationId:undefined} : noSession();}},
-        {id:'zenith_vibrate',description:'用户明确要求控制 Zenith 时执行一次限时振动。必须先手动授权本聊天；每轮最多调用一次，不循环。intensity 是 1–20 的百分比数字，seconds 是 0.5–10 秒；等待停止后返回结果，不得虚构成功。',parameters:{intensity:'number',seconds:'number'},
+        {id:'zenith_vibrate',description:'用户明确要求控制 Zenith 时执行一次限时振动。必须先手动授权本聊天；每轮最多调用一次，不循环。intensity 是 1–20 的百分比数字，seconds 是秒数，上限以当前上下文中的用户设置为准，最多60秒。理解自然语言；10秒内等待停止再返回，超过10秒仅先确认接收，禁止编造实际状态。',parameters:{intensity:'number',seconds:'number'},
           execute(args,ctx) {return active ? active.execute(args,ctx) : noSession();}},
-        {id:'zenith_stop',description:'停止 Zenith 并关闭聊天控制。用户要求停止时优先调用，不需要授权。',parameters:{},
+        {id:'zenith_stop',description:'停止 Zenith 当前动作并保留聊天授权。用户要求停止时优先调用；限时振动结束不需要额外调用。',parameters:{},
           execute() {return active ? active.stopFromChat() : noSession();}}
       ]
     },
